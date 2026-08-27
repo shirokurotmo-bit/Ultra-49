@@ -1,0 +1,61 @@
+export interface TouchEventHandlers {
+    onSwipeLeft?: () => void;
+    onSwipeRight?: () => void;
+}
+
+export class TouchController {
+    private startX = 0;
+    private startY = 0;
+    private readonly threshold = 50; // スワイプと判定する最小移動距離（px）
+    private readonly handler: (event: TouchEvent) => void;
+    private readonly endHandler: (event: TouchEvent) => void;
+    private initialized = false;
+
+    constructor(
+        private readonly targetElement: HTMLElement,
+        private readonly callbacks: TouchEventHandlers
+    ) {
+        this.handler = (event: TouchEvent) => {
+            const touch = event.touches[0];
+            if (touch) {
+                this.startX = touch.clientX;
+                this.startY = touch.clientY;
+            }
+        };
+
+        this.endHandler = (event: TouchEvent) => {
+            const touch = event.changedTouches[0];
+            if (!touch) return;
+
+            const diffX = touch.clientX - this.startX;
+            const diffY = touch.clientY - this.startY;
+
+            // 縦方向の移動量が大きい場合は縦スクロールとみなして無視する
+            if (Math.abs(diffY) > Math.abs(diffX)) {
+                return;
+            }
+
+            if (Math.abs(diffX) >= this.threshold) {
+                if (diffX > 0) {
+                    this.callbacks.onSwipeRight?.();
+                } else {
+                    this.callbacks.onSwipeLeft?.();
+                }
+            }
+        };
+    }
+
+    public init(): void {
+        if (this.initialized) return;
+        this.targetElement.addEventListener('touchstart', this.handler, { passive: true });
+        this.targetElement.addEventListener('touchend', this.endHandler, { passive: true });
+        this.initialized = true;
+    }
+
+    public destroy(): void {
+        if (!this.initialized) return;
+        this.targetElement.removeEventListener('touchstart', this.handler);
+        this.targetElement.removeEventListener('touchend', this.endHandler);
+        this.initialized = false;
+    }
+}
