@@ -18,7 +18,6 @@ export interface PaginationOptions {
     paddingLeft?: number;
 
     /*
-     * DOM測定時に最低限確保する文字数。
      * 極端に短いページを防ぐための補助値。
      */
     minimumCharactersPerPage?: number;
@@ -26,10 +25,11 @@ export interface PaginationOptions {
     /*
      * 1ページあたりの最大文字数。
      *
-     * DOM計測が異常になった場合の安全弁。
+     * DOM測定が異常になった場合の安全弁。
      */
     maximumCharactersPerPage?: number;
 }
+
 
 export interface PaginationPage {
     index: number;
@@ -42,18 +42,29 @@ export interface PaginationPage {
     characterCount: number;
 }
 
+
 export interface PaginationResult {
     pages: string[];
     totalPages: number;
 
     /*
-     * 将来的にReaderControllerが
-     * ページ位置を正確に管理できるように
-     * 詳細情報も返す。
+     * ReaderControllerがページ位置・文字位置を
+     * 正確に管理できるよう詳細情報も返す。
      */
     pageData: PaginationPage[];
 
     characterCount: number;
+}
+
+
+/* =========================================================
+   Internal Types
+========================================================= */
+
+interface PaginationConfig
+    extends Required<PaginationOptions> {
+    width: number;
+    height: number;
 }
 
 
@@ -68,9 +79,10 @@ export class PaginationEngine {
 
     private lastMeasurementKey = '';
 
+
     /* =====================================================
        Public
-    ====================================================== */
+    ===================================================== */
 
     public paginate(
         text: string,
@@ -85,13 +97,18 @@ export class PaginationEngine {
             this.normalizeText(text);
 
         /*
-         * 空作品
+         * 空作品。
+         *
+         * Reader側では1ページ目を表示できる状態を
+         * 維持する。
          */
-
-        if (normalizedText.length === 0) {
+        if (
+            normalizedText.length === 0
+        ) {
             return {
                 pages: [''],
                 totalPages: 1,
+
                 pageData: [{
                     index: 0,
                     text: '',
@@ -100,17 +117,16 @@ export class PaginationEngine {
                     endOffset: 0,
                     characterCount: 0
                 }],
+
                 characterCount: 0
             };
         }
 
         /*
-         * DOMが利用できない環境では
-         * 安全なfallbackを使用する。
+         * DOMが存在しない環境ではfallback。
          *
-         * テスト環境やSSR対策。
+         * テスト、SSR、Node環境などに対応。
          */
-
         if (
             typeof document === 'undefined'
         ) {
@@ -119,7 +135,8 @@ export class PaginationEngine {
                 containerHeight,
                 containerWidth,
                 fontSize,
-                lineHeight
+                lineHeight,
+                options
             );
         }
 
@@ -145,7 +162,10 @@ export class PaginationEngine {
                 ),
 
             totalPages:
-                Math.max(1, pages.length),
+                Math.max(
+                    1,
+                    pages.length
+                ),
 
             pageData:
                 pages,
@@ -160,14 +180,11 @@ export class PaginationEngine {
 
     /* =====================================================
        DOM Pagination
-    ====================================================== */
+    ===================================================== */
 
     private paginateByDOM(
         text: string,
-        config: Required<PaginationOptions> & {
-            width: number;
-            height: number;
-        }
+        config: PaginationConfig
     ): PaginationPage[] {
 
         const characters =
@@ -176,7 +193,8 @@ export class PaginationEngine {
         const totalCharacters =
             characters.length;
 
-        const pages: PaginationPage[] = [];
+        const pages:
+            PaginationPage[] = [];
 
         let currentOffset = 0;
         let pageIndex = 0;
@@ -191,17 +209,17 @@ export class PaginationEngine {
                 currentOffset;
 
             /*
-             * 残り全部が入るなら、
-             * 無駄な二分探索をしない。
+             * まず「残り全部」が1ページに入るか確認。
              */
-
             if (
                 this.fits(
                     text.slice(
                         currentOffset
                     ),
                     config
-                )
+                ) &&
+                remaining <=
+                    config.maximumCharactersPerPage
             ) {
 
                 const pageText =
@@ -226,18 +244,24 @@ export class PaginationEngine {
              * 二分探索
              * =================================================
              *
-             * 「何文字目まで入るか」を探す。
+             * 最大文字数を探索上限にする。
              *
-             * 線形探索で1文字ずつ追加すると、
-             * 長編では測定回数が爆発する。
+             * maximumCharactersPerPageを設定していても
+             * 探索に使っていない問題を修正。
              */
-
             let low = 1;
-            let high = remaining;
+
+            let high =
+                Math.min(
+                    remaining,
+                    config.maximumCharactersPerPage
+                );
 
             let bestFit = 0;
 
-            while (low <= high) {
+            while (
+                low <= high
+            ) {
 
                 const middle =
                     Math.floor(
@@ -260,44 +284,63 @@ export class PaginationEngine {
                     )
                 ) {
 
-                    bestFit = middle;
-                    low = middle + 1;
+                    bestFit =
+                        middle;
+
+                    low =
+                        middle + 1;
 
                 } else {
 
-                    high = middle - 1;
+                    high =
+                        middle - 1;
                 }
             }
 
             /*
-             * 最低1文字は進める。
-             *
-             * 異常なCSSや極端に小さい画面でも
-             * 無限ループしない。
+             * DOM測定上、1文字も収まらない場合でも
+             * 必ず1文字だけ進める。
              */
-
-            if (bestFit <= 0) {
+            if (
+                bestFit <= 0
+            ) {
                 bestFit = 1;
             }
 
             /*
-             * =================================================
-             * 改行位置の最適化
-             * =================================================
-             *
-             * ページ末尾が段落途中になる場合、
-             * 可能なら直前の改行位置まで戻す。
-             *
-             * ただし戻しすぎてページが極端に短くなる
-             * 場合はDOM測定結果を優先する。
+             * maximumCharactersPerPageを
+             * 必ず超えないようにする。
              */
+            bestFit =
+                Math.min(
+                    bestFit,
+                    config.maximumCharactersPerPage,
+                    remaining
+                );
 
+            /*
+             * ページ末尾を可能な限り
+             * 段落の切れ目へ寄せる。
+             */
             bestFit =
                 this.optimizeBreakPosition(
                     characters,
                     currentOffset,
                     bestFit,
                     config
+                );
+
+            /*
+             * 最適化後も安全のため上限を再適用。
+             */
+            bestFit =
+                Math.min(
+                    Math.max(
+                        1,
+                        bestFit
+                    ),
+                    config.maximumCharactersPerPage,
+                    remaining
                 );
 
             const endOffset =
@@ -316,10 +359,8 @@ export class PaginationEngine {
                     .join('');
 
             /*
-             * 万が一空文字になった場合の
-             * 無限ループ防止。
+             * 空文字ページによる無限ループ防止。
              */
-
             if (
                 pageText.length === 0
             ) {
@@ -341,9 +382,13 @@ export class PaginationEngine {
             pageIndex++;
         }
 
-        return pages.length > 0
-            ? pages
-            : [{
+        /*
+         * 何らかの異常でページが生成されなかった場合。
+         */
+        if (
+            pages.length === 0
+        ) {
+            return [{
                 index: 0,
                 text: '',
                 html: '',
@@ -351,19 +396,19 @@ export class PaginationEngine {
                 endOffset: 0,
                 characterCount: 0
             }];
+        }
+
+        return pages;
     }
 
 
     /* =====================================================
        Fit Test
-    ====================================================== */
+    ===================================================== */
 
     private fits(
         text: string,
-        config: Required<PaginationOptions> & {
-            width: number;
-            height: number;
-        }
+        config: PaginationConfig
     ): boolean {
 
         const element =
@@ -371,18 +416,18 @@ export class PaginationEngine {
                 config
             );
 
+        /*
+         * textContentを使用することで
+         * ユーザー本文がHTMLとして解釈されない。
+         */
         element.textContent =
             text;
 
         /*
-         * offsetWidth / offsetHeightではなく、
-         * scrollWidth / scrollHeightを見る。
-         *
-         * 縦書きではブラウザ内部で
-         * width方向へ列が増えるため、
-         * 両方を確認する。
+         * 縦書きでは列方向と行方向の双方で
+         * overflowが発生する可能性があるため、
+         * width / heightの両方を見る。
          */
-
         const fitsWidth =
             element.scrollWidth <=
             element.clientWidth + 1;
@@ -400,13 +445,10 @@ export class PaginationEngine {
 
     /* =====================================================
        Measurement Element
-    ====================================================== */
+    ===================================================== */
 
     private getMeasurementElement(
-        config: Required<PaginationOptions> & {
-            width: number;
-            height: number;
-        }
+        config: PaginationConfig
     ): HTMLDivElement {
 
         const key = [
@@ -421,6 +463,9 @@ export class PaginationEngine {
             config.paddingLeft
         ].join('|');
 
+        /*
+         * CSS条件が同一なら測定DOMを再利用。
+         */
         if (
             this.measurementElement &&
             this.lastMeasurementKey === key
@@ -428,11 +473,11 @@ export class PaginationEngine {
             return this.measurementElement;
         }
 
-        if (
-            this.measurementElement
-        ) {
-            this.measurementElement.remove();
-        }
+        /*
+         * レイアウト条件が変化した場合は
+         * 古い測定DOMを破棄。
+         */
+        this.measurementElement?.remove();
 
         const element =
             document.createElement(
@@ -448,15 +493,17 @@ export class PaginationEngine {
             element.style,
             {
                 position: 'fixed',
+
                 left: '-100000px',
+
                 top: '0',
 
-                width: `${config.width}px`,
-                height: `${config.height}px`,
+                width:
+                    `${config.width}px`,
 
-                /*
-                 * 実際の本文と同じ縦書き。
-                 */
+                height:
+                    `${config.height}px`,
+
                 writingMode:
                     'vertical-rl',
 
@@ -528,26 +575,25 @@ export class PaginationEngine {
 
     /* =====================================================
        Break Optimization
-    ====================================================== */
+    ===================================================== */
 
     private optimizeBreakPosition(
         characters: string[],
         start: number,
         length: number,
-        config: Required<PaginationOptions> & {
-            width: number;
-            height: number;
-        }
+        config: PaginationConfig
     ): number {
 
         const minimum =
-            config.minimumCharactersPerPage;
+            Math.min(
+                config.minimumCharactersPerPage,
+                length
+            );
 
         /*
-         * ページが短すぎる場合は
-         * 無理に改行位置へ戻さない。
+         * 短いページでは無理に改行位置へ
+         * 戻さない。
          */
-
         if (
             length <= minimum
         ) {
@@ -561,50 +607,63 @@ export class PaginationEngine {
             );
 
         /*
-         * 直近の段落改行を探す。
+         * 直近120文字程度の中から、
+         * もっとも近い段落改行を探す。
          */
+        const searchStart =
+            Math.max(
+                minimum,
+                candidate.length - 120
+            );
 
         for (
             let i =
                 candidate.length - 1;
-            i >= Math.max(
-                minimum,
-                candidate.length - 120
-            );
+            i >= searchStart;
             i--
         ) {
 
             if (
-                candidate[i] === '\n'
+                candidate[i] !== '\n'
             ) {
+                continue;
+            }
 
-                const breakLength =
-                    i + 1;
+            const breakLength =
+                i + 1;
 
-                if (
-                    breakLength <
-                    minimum
-                ) {
-                    break;
-                }
+            if (
+                breakLength < minimum
+            ) {
+                continue;
+            }
 
-                const breakText =
-                    characters
-                        .slice(
-                            start,
-                            start +
-                                breakLength
-                        )
-                        .join('');
+            if (
+                breakLength >
+                config.maximumCharactersPerPage
+            ) {
+                continue;
+            }
 
-                if (
-                    this.fits(
-                        breakText,
-                        config
+            const breakText =
+                characters
+                    .slice(
+                        start,
+                        start +
+                            breakLength
                     )
-                ) {
-                    return breakLength;
-                }
+                    .join('');
+
+            /*
+             * 実際に収まるか再確認。
+             */
+            if (
+                this.fits(
+                    breakText,
+                    config
+                )
+            ) {
+                return breakLength;
             }
         }
 
@@ -614,7 +673,7 @@ export class PaginationEngine {
 
     /* =====================================================
        Page Creation
-    ====================================================== */
+    ===================================================== */
 
     private createPage(
         index: number,
@@ -629,12 +688,9 @@ export class PaginationEngine {
             text,
 
             /*
-             * 本文は必ずescapeしてからHTML化。
-             *
-             * ユーザーが小説内にHTMLを書いても
-             * DOMとして実行されない。
+             * escapeHtml()済みなので、
+             * ユーザー本文がHTMLとして実行されない。
              */
-
             html:
                 `<div class="novel-page-text">${this.escapeHtml(text)}</div>`,
 
@@ -650,7 +706,7 @@ export class PaginationEngine {
 
     /* =====================================================
        Configuration
-    ====================================================== */
+    ===================================================== */
 
     private createConfig(
         height: number,
@@ -658,7 +714,25 @@ export class PaginationEngine {
         fontSize: number,
         lineHeight: number,
         options: PaginationOptions
-    ) {
+    ): PaginationConfig {
+
+        const safeMaximum =
+            Math.max(
+                100,
+                Math.floor(
+                    options.maximumCharactersPerPage ??
+                    10000
+                )
+            );
+
+        const safeMinimum =
+            Math.max(
+                1,
+                Math.floor(
+                    options.minimumCharactersPerPage ??
+                    80
+                )
+            );
 
         return {
             width:
@@ -680,13 +754,17 @@ export class PaginationEngine {
             fontSize:
                 Math.max(
                     8,
-                    fontSize
+                    Number.isFinite(fontSize)
+                        ? fontSize
+                        : 20
                 ),
 
             lineHeight:
                 Math.max(
                     1,
-                    lineHeight
+                    Number.isFinite(lineHeight)
+                        ? lineHeight
+                        : 1.8
                 ),
 
             paddingTop:
@@ -714,58 +792,82 @@ export class PaginationEngine {
                 ),
 
             minimumCharactersPerPage:
-                Math.max(
-                    1,
-                    options.minimumCharactersPerPage ??
-                    80
+                Math.min(
+                    safeMinimum,
+                    safeMaximum
                 ),
 
             maximumCharactersPerPage:
-                Math.max(
-                    100,
-                    options.maximumCharactersPerPage ??
-                    10000
-                )
+                safeMaximum
         };
     }
 
 
     /* =====================================================
        Normalize
-    ====================================================== */
+    ===================================================== */
 
     private normalizeText(
         text: string
     ): string {
 
-        return text
-            .replace(/\r\n/g, '\n')
-            .replace(/\r/g, '\n')
-            .replace(/\u00a0/g, ' ');
+        return String(text)
+            .replace(
+                /\r\n/g,
+                '\n'
+            )
+            .replace(
+                /\r/g,
+                '\n'
+            )
+            .replace(
+                /\u00a0/g,
+                ' '
+            );
     }
 
 
     /* =====================================================
        Fallback
-    ====================================================== */
+    ===================================================== */
 
     private paginateFallback(
         text: string,
         containerHeight: number,
         containerWidth: number,
         fontSize: number,
-        lineHeight: number
+        lineHeight: number,
+        options: PaginationOptions
     ): PaginationResult {
 
         const chars =
             Array.from(text);
 
+        const safeFontSize =
+            Math.max(
+                8,
+                Number.isFinite(fontSize)
+                    ? fontSize
+                    : 20
+            );
+
+        const safeLineHeight =
+            Math.max(
+                1,
+                Number.isFinite(lineHeight)
+                    ? lineHeight
+                    : 1.8
+            );
+
         const charsPerLine =
             Math.max(
                 1,
                 Math.floor(
-                    containerHeight /
-                    fontSize
+                    Math.max(
+                        1,
+                        containerHeight
+                    ) /
+                    safeFontSize
                 )
             );
 
@@ -773,10 +875,13 @@ export class PaginationEngine {
             Math.max(
                 1,
                 Math.floor(
-                    containerWidth /
+                    Math.max(
+                        1,
+                        containerWidth
+                    ) /
                     (
-                        fontSize *
-                        lineHeight
+                        safeFontSize *
+                        safeLineHeight
                     )
                 )
             );
@@ -786,6 +891,21 @@ export class PaginationEngine {
                 1,
                 charsPerLine *
                 linesPerPage
+            );
+
+        const maximumCharactersPerPage =
+            Math.max(
+                100,
+                Math.floor(
+                    options.maximumCharactersPerPage ??
+                    10000
+                )
+            );
+
+        const capacity =
+            Math.min(
+                estimatedCapacity,
+                maximumCharactersPerPage
             );
 
         const pages:
@@ -803,7 +923,7 @@ export class PaginationEngine {
                 Math.min(
                     chars.length,
                     offset +
-                    estimatedCapacity
+                        capacity
                 );
 
             const pageText =
@@ -823,8 +943,27 @@ export class PaginationEngine {
                 )
             );
 
-            offset = end;
+            offset =
+                end;
+
             index++;
+        }
+
+        /*
+         * 通常は空にならないが、
+         * 安全のため1ページを保証。
+         */
+        if (
+            pages.length === 0
+        ) {
+            pages.push(
+                this.createPage(
+                    0,
+                    '',
+                    0,
+                    0
+                )
+            );
         }
 
         return {
@@ -851,7 +990,7 @@ export class PaginationEngine {
 
     /* =====================================================
        Escape
-    ====================================================== */
+    ===================================================== */
 
     private escapeHtml(
         value: string
@@ -883,7 +1022,7 @@ export class PaginationEngine {
 
     /* =====================================================
        Cleanup
-    ====================================================== */
+    ===================================================== */
 
     public destroy(): void {
 
