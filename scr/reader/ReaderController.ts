@@ -52,7 +52,6 @@ export class ReaderController {
         this.lastPageIndex = -1;
         this.lastPaginationKey = '';
 
-        this.paginationEngine.destroy();
     }
 
     /**
