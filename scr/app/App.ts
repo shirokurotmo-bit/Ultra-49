@@ -1,13 +1,16 @@
+```ts
 import { AppState, NovelState } from './AppState';
 import { UIController } from '../ui/UIController';
 import { EditorController } from '../editor/EditorController';
 import { ReaderController } from '../reader/ReaderController';
 import { IndexedDBStore } from '../store/IndexedDBStore';
+import { SaveScheduler } from '../store/SaveScheduler';
 import { PaginationEngine } from '../pagination/PaginationEngine';
 
 export class App {
     private readonly state: AppState;
     private readonly store: IndexedDBStore;
+    private readonly saveScheduler: SaveScheduler;
     private readonly paginationEngine: PaginationEngine;
 
     private readonly uiController: UIController;
@@ -17,35 +20,31 @@ export class App {
     private unsubscribeState?: () => void;
 
     private initialized = false;
+    private initializing = false;
 
     constructor() {
-        /*
-         * =====================================================
-         * Core
-         * =====================================================
-         */
-
         this.state = new AppState();
 
         this.store = new IndexedDBStore();
 
+        this.saveScheduler =
+            new SaveScheduler(
+                this.store,
+                1000
+            );
+
         this.paginationEngine =
             new PaginationEngine();
 
-        /*
-         * =====================================================
-         * Controllers
-         * =====================================================
-         *
-         * Controller同士を直接依存させず、
-         * AppStateを中心に接続する。
-         */
-
         this.uiController =
-            new UIController(this.state);
+            new UIController(
+                this.state
+            );
 
         this.editorController =
-            new EditorController(this.state);
+            new EditorController(
+                this.state
+            );
 
         this.readerController =
             new ReaderController(
@@ -54,90 +53,80 @@ export class App {
             );
     }
 
+    /**
+     * アプリケーションを初期化する。
+     */
     public async init(): Promise<void> {
-        /*
-         * 二重初期化防止
-         */
-
-        if (this.initialized) {
+        if (
+            this.initialized ||
+            this.initializing
+        ) {
             return;
         }
 
-        /*
-         * =====================================================
-         * 1. 保存データをロード
-         * =====================================================
-         *
-         * UIを初期化する前にロードする。
-         *
-         * 先にUIを描画してから保存データを入れると、
-         * 初期状態 → 保存状態という不要な再描画が発生する。
-         */
+        this.initializing = true;
 
-        const savedData =
-            await this.loadSavedState();
+        try {
+            /*
+             * 1. 保存データを先にロード。
+             */
+            const savedData =
+                await this.loadSavedState();
 
-        if (savedData) {
-            this.state.replaceState(
-                savedData
+            if (savedData) {
+                this.state.replaceState(
+                    savedData
+                );
+            }
+
+            /*
+             * 2. State変更を監視。
+             *
+             * 保存処理はSaveSchedulerへ委譲する。
+             */
+            this.unsubscribeState =
+                this.state.subscribe(
+                    (newState) => {
+                        this.handleStateChange(
+                            newState
+                        );
+                    }
+                );
+
+            /*
+             * 3. Controller初期化。
+             */
+            this.uiController.init();
+            this.editorController.init();
+            this.readerController.init();
+
+            /*
+             * 4. 初期化完了。
+             */
+            this.state.markInitialized();
+
+            this.initialized = true;
+        } catch (error) {
+            console.error(
+                'アプリケーションの初期化に失敗しました:',
+                error
             );
+
+            this.unsubscribeState?.();
+            this.unsubscribeState =
+                undefined;
+
+            throw error;
+        } finally {
+            this.initializing = false;
         }
-
-        /*
-         * =====================================================
-         * 2. State変更監視
-         * =====================================================
-         *
-         * ただし、この段階では保存処理そのものを
-         * 直接subscribeにぶら下げる。
-         *
-         * 将来的にはここをSaveSchedulerへ置き換える。
-         *
-         * 現状のIndexedDBStore APIを維持しながら、
-         * App側の責務を整理する。
-         */
-
-        this.unsubscribeState =
-            this.state.subscribe(
-                (newState) => {
-                    void this.handleStateChange(
-                        newState
-                    );
-                }
-            );
-
-        /*
-         * =====================================================
-         * 3. Controller初期化
-         * =====================================================
-         */
-
-        this.uiController.init();
-
-        this.editorController.init();
-
-        this.readerController.init();
-
-        /*
-         * =====================================================
-         * 4. 初期化完了
-         * =====================================================
-         */
-
-        this.state.markInitialized();
-
-        this.initialized = true;
     }
 
-    /*
-     * =========================================================
-     * Saved State
-     * =========================================================
+    /**
+     * 保存済みStateを読み込む。
      */
-
     private async loadSavedState():
         Promise<NovelState | null> {
-
         try {
             const savedData =
                 await this.store.load();
@@ -150,11 +139,6 @@ export class App {
                 savedData
             );
         } catch (error) {
-            /*
-             * 保存データが壊れていても、
-             * アプリそのものを起動不能にしない。
-             */
-
             console.error(
                 '保存データの読み込みに失敗しました:',
                 error
@@ -164,64 +148,104 @@ export class App {
         }
     }
 
-    /*
-     * =========================================================
-     * State Change
-     * =========================================================
+    /**
+     * State変更を自動保存へ渡す。
+     *
+     * SaveSchedulerがデバウンス、
+     * 保存中の変更、失敗時の再保存を管理する。
      */
-
-    private async handleStateChange(
+    private handleStateChange(
         state: Readonly<NovelState>
-    ): Promise<void> {
-
-        /*
-         * 初期化前の状態変更は保存しない。
-         *
-         * 初期データロード前に発生した状態を
-         * IndexedDBへ書き戻す事故を防止する。
-         */
-
-        if (!this.initialized) {
+    ): void {
+        if (
+            !this.initialized
+        ) {
             return;
         }
 
         /*
-         * 保存中のエラーがUIを壊さないよう、
-         * App側で例外を吸収する。
+         * AppStateの保存状態そのものが変更された場合に
+         * 保存予約を発生させない。
+         *
+         * 作品データの変更だけを保存対象とする。
          */
+        if (
+            state.saveStatus ===
+                'saving' ||
+            state.saveStatus ===
+                'saved'
+        ) {
+            return;
+        }
 
-        try {
-            this.state.markSaving();
+        this.saveScheduler.schedule(
+            state,
+            (status) => {
+                this.handleSaveStatus(
+                    status
+                );
+            }
+        );
+    }
 
-            await this.store.save(state);
+    /**
+     * SaveSchedulerの状態をAppStateへ反映する。
+     *
+     * ここでは保存状態だけを更新するため、
+     * handleStateChange側で保存予約しない。
+     */
+    private handleSaveStatus(
+        status:
+            | 'dirty'
+            | 'saving'
+            | 'saved'
+            | 'error'
+    ): void {
+        if (
+            !this.initialized
+        ) {
+            return;
+        }
 
-            this.state.markSaved();
-        } catch (error) {
-            console.error(
-                '作品の保存に失敗しました:',
-                error
-            );
+        switch (status) {
+            case 'dirty':
+                if (
+                    this.state
+                        .getState()
+                        .saveStatus !==
+                    'dirty'
+                ) {
+                    this.state.markDirty();
+                }
+                break;
 
-            this.state.markSaveError();
+            case 'saving':
+                if (
+                    this.state
+                        .getState()
+                        .saveStatus !==
+                    'saving'
+                ) {
+                    this.state.markSaving();
+                }
+                break;
+
+            case 'saved':
+                this.state.markSaved();
+                break;
+
+            case 'error':
+                this.state.markSaveError();
+                break;
         }
     }
 
-    /*
-     * =========================================================
-     * Loaded State Normalization
-     * =========================================================
-     *
-     * 古いバージョンのデータや、
-     * 不完全なIndexedDBデータをそのままStateへ入れない。
-     *
-     * 実際のデータマイグレーションは
-     * IndexedDBStore側で実装する。
+    /**
+     * 保存データを正規化する。
      */
-
     private normalizeLoadedState(
         data: NovelState
     ): NovelState {
-
         if (!data) {
             throw new Error(
                 '保存データが存在しません。'
@@ -229,7 +253,9 @@ export class App {
         }
 
         if (
-            !Array.isArray(data.chapters) ||
+            !Array.isArray(
+                data.chapters
+            ) ||
             data.chapters.length === 0
         ) {
             throw new Error(
@@ -239,40 +265,75 @@ export class App {
 
         const currentChapterExists =
             data.chapters.some(
-                chapter =>
+                (chapter) =>
                     chapter.id ===
                     data.currentChapterId
             );
 
-        if (!currentChapterExists) {
+        if (
+            !currentChapterExists
+        ) {
             return {
                 ...data,
-
                 currentChapterId:
                     data.chapters[0].id,
-
-                currentPageIndex: 0
+                currentPageIndex: 0,
             };
         }
 
         return data;
     }
 
-    /*
-     * =========================================================
-     * Destroy
-     * =========================================================
-     *
-     * SPA化、テスト、将来的な作品切替などに備える。
+    /**
+     * Controller / Schedulerをすべて破棄する。
      */
+    public async destroy(): Promise<void> {
+        if (
+            !this.initialized &&
+            !this.initializing
+        ) {
+            return;
+        }
 
-    public destroy(): void {
-
+        /*
+         * State通知を停止。
+         */
         this.unsubscribeState?.();
-
         this.unsubscribeState =
             undefined;
 
+        /*
+         * 最終状態を保存。
+         *
+         * 初期化済みの場合のみ実行。
+         */
+        if (this.initialized) {
+            try {
+                await this.saveScheduler.flush(
+                    this.state.getState()
+                );
+            } catch (error) {
+                console.error(
+                    '終了時の保存に失敗しました:',
+                    error
+                );
+            }
+        }
+
+        /*
+         * Controller破棄。
+         */
+        this.readerController.destroy();
+        this.editorController.destroy();
+        this.uiController.destroy();
+
+        /*
+         * Scheduler破棄。
+         */
+        this.saveScheduler.destroy();
+
         this.initialized = false;
+        this.initializing = false;
     }
 }
+```
