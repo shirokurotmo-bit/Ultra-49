@@ -1,364 +1,326 @@
-import { NovelState } from '../app/AppState';
-import { IndexedDBStore } from './IndexedDBStore';
+```ts
+import { AppState, NovelState } from './AppState';
+import { UIController } from '../ui/UIController';
+import { EditorController } from '../editor/EditorController';
+import { ReaderController } from '../reader/ReaderController';
+import { IndexedDBStore } from '../store/IndexedDBStore';
+import { SaveScheduler, SaveStatus } from '../store/SaveScheduler';
+import { PaginationEngine } from '../pagination/PaginationEngine';
 
-export type SaveStatus =
-    | 'dirty'
-    | 'saving'
-    | 'saved'
-    | 'error';
+export class App {
+    private readonly state: AppState;
+    private readonly store: IndexedDBStore;
+    private readonly saveScheduler: SaveScheduler;
+    private readonly paginationEngine: PaginationEngine;
 
-export type SaveStatusListener =
-    (status: SaveStatus) => void;
+    private readonly uiController: UIController;
+    private readonly editorController: EditorController;
+    private readonly readerController: ReaderController;
 
-export class SaveScheduler {
-    private timerId: number | null = null;
+    private unsubscribeState?: () => void;
 
-    private readonly delayMs: number;
+    private initialized = false;
+    private initializing = false;
 
-    private pendingState: NovelState | null = null;
+    constructor() {
+        this.state = new AppState();
 
-    private savePromise: Promise<void> | null = null;
+        this.store = new IndexedDBStore();
 
-    private saveRequestedWhileSaving = false;
-
-    private destroyed = false;
-
-    private statusListener:
-        SaveStatusListener | null = null;
-
-    constructor(
-        private readonly store: IndexedDBStore,
-        delayMs = 1000
-    ) {
-        this.delayMs = Math.max(
-            250,
-            delayMs
-        );
-    }
-
-    /* =========================================================
-       Public API
-    ========================================================== */
-
-    public schedule(
-        state: NovelState,
-        onStatusChange?: SaveStatusListener
-    ): void {
-
-        if (this.destroyed) {
-            return;
-        }
-
-        if (onStatusChange) {
-            this.statusListener =
-                onStatusChange;
-        }
-
-        /*
-         * 保存予約時点のスナップショットを保持。
-         *
-         * AppStateがその後変更されても、
-         * 「何を保存する予定だったか」が
-         * 曖昧にならない。
-         */
-
-        this.pendingState =
-            this.cloneState(state);
-
-        this.emitStatus('dirty');
-
-        /*
-         * 現在保存中ならタイマーだけ設定せず、
-         * 「保存後にもう一度保存する」ことを記録する。
-         */
-
-        if (this.savePromise !== null) {
-            this.saveRequestedWhileSaving =
-                true;
-
-            return;
-        }
-
-        this.clearTimer();
-
-        this.timerId =
-            window.setTimeout(() => {
-                this.timerId = null;
-
-                void this.executePendingSave();
-            }, this.delayMs);
-    }
-
-
-    public async flush(
-        state: NovelState
-    ): Promise<void> {
-
-        if (this.destroyed) {
-            return;
-        }
-
-        this.clearTimer();
-
-        /*
-         * flush時点の最新Stateを優先。
-         */
-
-        this.pendingState =
-            this.cloneState(state);
-
-        /*
-         * すでに保存中なら、その処理が終わった後に
-         * 最新Stateを保存する。
-         */
-
-        if (this.savePromise !== null) {
-            this.saveRequestedWhileSaving =
-                true;
-
-            await this.savePromise;
-
-            /*
-             * 保存完了後に別のstateが
-             * 入っていれば、それを保存。
-             */
-
-            if (
-                this.pendingState !== null
-            ) {
-                await this.executePendingSave();
-            }
-
-            return;
-        }
-
-        await this.executePendingSave();
-    }
-
-
-    public cancel(): void {
-
-        this.clearTimer();
-
-        this.pendingState = null;
-
-        this.saveRequestedWhileSaving =
-            false;
-    }
-
-
-    public destroy(): void {
-
-        this.destroyed = true;
-
-        this.clearTimer();
-
-        this.pendingState = null;
-
-        this.saveRequestedWhileSaving =
-            false;
-
-        this.statusListener = null;
-    }
-
-
-    public setStatusListener(
-        listener:
-            SaveStatusListener | null
-    ): void {
-
-        this.statusListener = listener;
-    }
-
-
-    /* =========================================================
-       Save
-    ========================================================== */
-
-    private async executePendingSave():
-        Promise<void> {
-
-        if (this.destroyed) {
-            return;
-        }
-
-        if (this.savePromise !== null) {
-            this.saveRequestedWhileSaving =
-                true;
-
-            return this.savePromise;
-        }
-
-        const stateToSave =
-            this.pendingState;
-
-        if (stateToSave === null) {
-            return;
-        }
-
-        /*
-         * 保存対象を一旦取り出す。
-         *
-         * 新しい入力が来た場合は、
-         * pendingStateに新しいStateが入る。
-         */
-
-        this.pendingState = null;
-
-        this.emitStatus('saving');
-
-        const operation =
-            this.performSave(
-                stateToSave
+        this.saveScheduler =
+            new SaveScheduler(
+                this.store,
+                1000
             );
 
-        this.savePromise =
-            operation;
+        this.paginationEngine =
+            new PaginationEngine();
 
-        try {
-            await operation;
-        } finally {
-            this.savePromise = null;
-        }
+        this.uiController =
+            new UIController(
+                this.state
+            );
 
-        /*
-         * 保存中に新しい入力が発生した場合。
-         */
+        this.editorController =
+            new EditorController(
+                this.state
+            );
 
+        this.readerController =
+            new ReaderController(
+                this.state,
+                this.paginationEngine
+            );
+    }
+
+    /**
+     * アプリケーションを初期化。
+     */
+    public async init(): Promise<void> {
         if (
-            this.saveRequestedWhileSaving ||
-            this.pendingState !== null
+            this.initialized ||
+            this.initializing
         ) {
-
-            this.saveRequestedWhileSaving =
-                false;
-
-            /*
-             * 直ちに最新Stateを保存。
-             *
-             * ここではdelayを再度待たせない。
-             */
-
-            if (
-                this.pendingState !== null
-            ) {
-                await this.executePendingSave();
-            }
+            return;
         }
-    }
 
-
-    private async performSave(
-        state: NovelState
-    ): Promise<void> {
+        this.initializing = true;
 
         try {
-
-            await this.store.save(
-                state
-            );
-
-            if (!this.destroyed) {
-                this.emitStatus('saved');
-            }
-
-        } catch (error) {
-
-            console.error(
-                '自動保存に失敗しました:',
-                error
-            );
-
             /*
-             * 保存に失敗したStateを
-             * 失わないようにする。
+             * 1. 保存データをロード。
              */
+            const savedData =
+                await this.loadSavedState();
 
-            if (!this.destroyed) {
-                this.pendingState =
-                    state;
-
-                this.emitStatus(
-                    'error'
+            if (savedData) {
+                this.state.replaceState(
+                    savedData
                 );
             }
 
-            throw error;
-        }
-    }
-
-
-    /* =========================================================
-       Snapshot
-    ========================================================== */
-
-    private cloneState(
-        state: NovelState
-    ): NovelState {
-
-        /*
-         * NovelStateはJSON互換のデータ構造なので、
-         * structuredCloneを優先する。
-         *
-         * 古いブラウザ向けにfallbackも用意。
-         */
-
-        if (
-            typeof structuredClone ===
-            'function'
-        ) {
-            return structuredClone(
-                state
+            /*
+             * 2. SaveSchedulerの状態通知を登録。
+             *
+             * Schedulerからの保存状態だけを
+             * AppStateへ反映する。
+             */
+            this.saveScheduler.setStatusListener(
+                this.handleSaveStatus
             );
-        }
-
-        return JSON.parse(
-            JSON.stringify(state)
-        ) as NovelState;
-    }
-
-
-    /* =========================================================
-       Timer
-    ========================================================== */
-
-    private clearTimer(): void {
-
-        if (
-            this.timerId !== null
-        ) {
-            window.clearTimeout(
-                this.timerId
-            );
-
-            this.timerId = null;
-        }
-    }
-
-
-    /* =========================================================
-       Status
-    ========================================================== */
-
-    private emitStatus(
-        status: SaveStatus
-    ): void {
-
-        try {
-            this.statusListener?.(
-                status
-            );
-        } catch (error) {
 
             /*
-             * UI側のstatus callbackが
-             * 保存処理そのものを壊さない。
+             * 3. State変更を監視。
+             *
+             * 保存処理そのものはSaveSchedulerへ
+             * 委譲する。
              */
+            this.unsubscribeState =
+                this.state.subscribe(
+                    (newState) => {
+                        this.handleStateChange(
+                            newState
+                        );
+                    }
+                );
+
+            /*
+             * 4. Controller初期化。
+             */
+            this.uiController.init();
+            this.editorController.init();
+            this.readerController.init();
+
+            /*
+             * 5. 初期化完了。
+             */
+            this.initialized = true;
+
+            this.state.markInitialized();
+        } catch (error) {
+            this.unsubscribeState?.();
+            this.unsubscribeState =
+                undefined;
+
+            this.saveScheduler.destroy();
+
+            this.initializing = false;
 
             console.error(
-                '保存状態コールバックでエラーが発生しました:',
+                'アプリケーションの初期化に失敗しました:',
                 error
             );
+
+            throw error;
+        }
+
+        this.initializing = false;
+    }
+
+    /**
+     * State変更時の保存予約。
+     */
+    private handleStateChange(
+        state: Readonly<NovelState>
+    ): void {
+        if (!this.initialized) {
+            return;
+        }
+
+        /*
+         * UI表示だけの変更では保存不要。
+         *
+         * 保存対象となる変更はAppState側で
+         * saveStatus='dirty'になる。
+         */
+        if (
+            state.saveStatus !== 'dirty' &&
+            state.saveStatus !== 'error'
+        ) {
+            return;
+        }
+
+        this.saveScheduler.schedule(
+            state
+        );
+    }
+
+    /**
+     * SaveSchedulerからの状態通知。
+     */
+    private handleSaveStatus = (
+        status: SaveStatus
+    ): void => {
+        if (!this.initialized) {
+            return;
+        }
+
+        switch (status) {
+            case 'dirty':
+                /*
+                 * 既にdirtyならmarkDirty()は
+                 * State変更を発生させない。
+                 */
+                this.state.markDirty();
+                break;
+
+            case 'saving':
+                this.state.markSaving();
+                break;
+
+            case 'saved':
+                this.state.markSaved();
+                break;
+
+            case 'error':
+                this.state.markSaveError();
+                break;
+        }
+    };
+
+    /**
+     * 保存済みStateをロード。
+     */
+    private async loadSavedState():
+        Promise<NovelState | null> {
+        try {
+            const savedData =
+                await this.store.load();
+
+            if (!savedData) {
+                return null;
+            }
+
+            return this.normalizeLoadedState(
+                savedData
+            );
+        } catch (error) {
+            console.error(
+                '保存データの読み込みに失敗しました:',
+                error
+            );
+
+            return null;
         }
     }
+
+    /**
+     * 読み込んだStateを正規化。
+     */
+    private normalizeLoadedState(
+        data: NovelState
+    ): NovelState {
+        if (!data) {
+            throw new Error(
+                '保存データが存在しません。'
+            );
+        }
+
+        if (
+            !Array.isArray(
+                data.chapters
+            ) ||
+            data.chapters.length === 0
+        ) {
+            throw new Error(
+                '保存データに有効な章がありません。'
+            );
+        }
+
+        const currentChapterExists =
+            data.chapters.some(
+                (chapter) =>
+                    chapter.id ===
+                    data.currentChapterId
+            );
+
+        if (
+            !currentChapterExists
+        ) {
+            return {
+                ...data,
+                currentChapterId:
+                    data.chapters[0].id,
+                currentPageIndex: 0,
+            };
+        }
+
+        return data;
+    }
+
+    /**
+     * アプリケーションを破棄。
+     */
+    public async destroy(): Promise<void> {
+        if (
+            !this.initialized &&
+            !this.initializing
+        ) {
+            return;
+        }
+
+        /*
+         * State通知を停止。
+         */
+        this.unsubscribeState?.();
+
+        this.unsubscribeState =
+            undefined;
+
+        /*
+         * 終了前に最新Stateを保存。
+         */
+        if (this.initialized) {
+            try {
+                await this.saveScheduler.flush(
+                    this.state.getState()
+                );
+            } catch (error) {
+                console.error(
+                    '終了時の保存に失敗しました:',
+                    error
+                );
+            }
+        }
+
+        /*
+         * Controllerを破棄。
+         */
+        this.readerController.destroy();
+        this.editorController.destroy();
+        this.uiController.destroy();
+
+        /*
+         * Schedulerを破棄。
+         */
+        this.saveScheduler.destroy();
+
+        /*
+         * PaginationEngineはReaderControllerが
+         * 管理しているため、ここではdestroyしない。
+         */
+        this.initialized = false;
+        this.initializing = false;
+    }
 }
+```
