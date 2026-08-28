@@ -43,8 +43,6 @@ export class EditorController {
 
     /**
      * Controllerを破棄する。
-     *
-     * State購読とDOMイベントを確実に解除する。
      */
     public destroy(): void {
         this.unsubscribe?.();
@@ -60,10 +58,13 @@ export class EditorController {
 
     /**
      * DOMを再取得して再描画する。
-     *
-     * モード切替やDOM再生成後に使用する。
      */
     public refreshViews(): void {
+        if (!this.initialized) {
+            this.init();
+            return;
+        }
+
         this.removeEvents();
 
         this.cacheElements();
@@ -93,38 +94,30 @@ export class EditorController {
      * DOMイベントを登録する。
      */
     private bindEvents(): void {
-        if (this.textareaElement) {
-            this.textareaElement.addEventListener(
-                'input',
-                this.handleInput
-            );
-        }
+        this.textareaElement?.addEventListener(
+            'input',
+            this.handleInput
+        );
 
-        if (this.chapterSelectElement) {
-            this.chapterSelectElement.addEventListener(
-                'change',
-                this.handleChapterChange
-            );
-        }
+        this.chapterSelectElement?.addEventListener(
+            'change',
+            this.handleChapterChange
+        );
     }
 
     /**
      * DOMイベントを解除する。
      */
     private removeEvents(): void {
-        if (this.textareaElement) {
-            this.textareaElement.removeEventListener(
-                'input',
-                this.handleInput
-            );
-        }
+        this.textareaElement?.removeEventListener(
+            'input',
+            this.handleInput
+        );
 
-        if (this.chapterSelectElement) {
-            this.chapterSelectElement.removeEventListener(
-                'change',
-                this.handleChapterChange
-            );
-        }
+        this.chapterSelectElement?.removeEventListener(
+            'change',
+            this.handleChapterChange
+        );
     }
 
     /**
@@ -158,7 +151,7 @@ export class EditorController {
         }
 
         /*
-         * 内容に変更がない場合はStateを更新しない。
+         * 内容に変更がなければ更新しない。
          */
         if (
             currentChapter.content ===
@@ -167,29 +160,25 @@ export class EditorController {
             return;
         }
 
+        const updatedChapter = {
+            ...currentChapter,
+            content: currentText,
+            characterCount:
+                Array.from(currentText).length,
+        };
+
         const updatedChapters =
             state.chapters.map(
-                (chapter) => {
-                    if (
-                        chapter.id !==
-                        state.currentChapterId
-                    ) {
-                        return chapter;
-                    }
-
-                    return {
-                        ...chapter,
-                        content: currentText,
-                        characterCount:
-                            Array.from(
-                                currentText
-                            ).length,
-                    };
-                }
+                (chapter) =>
+                    chapter.id ===
+                    state.currentChapterId
+                        ? updatedChapter
+                        : chapter
             );
 
         this.state.setState({
             chapters: updatedChapters,
+            saveStatus: 'dirty',
         });
     };
 
@@ -210,9 +199,6 @@ export class EditorController {
         const state =
             this.state.getState();
 
-        /*
-         * 存在しない章IDはStateへ設定しない。
-         */
         const targetChapter =
             state.chapters.find(
                 (chapter) =>
@@ -220,6 +206,9 @@ export class EditorController {
                     newChapterId
             );
 
+        /*
+         * 存在しない章IDはStateへ設定しない。
+         */
         if (!targetChapter) {
             return;
         }
@@ -237,7 +226,9 @@ export class EditorController {
         this.state.setState({
             currentChapterId:
                 newChapterId,
-            currentPageIndex: 0,
+
+            currentPageIndex:
+                0,
         });
     };
 
@@ -271,8 +262,9 @@ export class EditorController {
     /**
      * 本文入力欄を更新する。
      *
-     * ユーザー入力中にカーソルを奪わないよう、
-     * 値が異なる場合のみ更新する。
+     * 値が異なる場合だけ更新することで、
+     * ユーザー入力中のカーソル位置を
+     * 不必要に奪わない。
      */
     private renderTextarea(
         content: string
@@ -293,8 +285,6 @@ export class EditorController {
 
     /**
      * 章セレクトをStateへ同期する。
-     *
-     * innerHTMLは使用せず、optionをDOM APIで生成する。
      */
     private renderChapterSelect(
         state: NovelState
@@ -356,8 +346,7 @@ export class EditorController {
             );
         } else {
             /*
-             * 章タイトルだけ変更された場合にも
-             * セレクト表示を同期する。
+             * 章タイトル変更にも対応。
              */
             state.chapters.forEach(
                 (chapter, index) => {
@@ -389,17 +378,16 @@ export class EditorController {
     }
 
     /**
-     * 現在章が存在しない場合のUIクリア。
+     * 現在章が存在しない場合のUI。
      */
     private renderEmptyState(): void {
         if (this.textareaElement) {
-            this.textareaElement.value =
-                '';
+            this.textareaElement.value = '';
         }
 
         if (this.chapterSelectElement) {
-            this.chapterSelectElement.value =
-                '';
+            this.chapterSelectElement.replaceChildren();
+            this.chapterSelectElement.value = '';
         }
     }
 }
