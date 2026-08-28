@@ -1,3 +1,4 @@
+```ts
 /* =========================================================
    AppState.ts
    縦読み小説エディタ PRO 2.0
@@ -30,6 +31,12 @@ export interface NovelState {
 
     readonly currentMode: AppMode;
 
+    /**
+     * 現在表示しているページ。
+     *
+     * ページ総数は画面サイズ・フォント・余白などで
+     * 変化するためAppStateでは管理しない。
+     */
     readonly currentPageIndex: number;
 
     readonly totalCharacterCount: number;
@@ -50,7 +57,12 @@ export type StateListener = (
    Utility
 ========================================================= */
 
-function createId(prefix: string): string {
+/**
+ * 一意なIDを生成する。
+ */
+function createId(
+    prefix: string
+): string {
     if (
         typeof crypto !== 'undefined' &&
         typeof crypto.randomUUID === 'function'
@@ -58,57 +70,77 @@ function createId(prefix: string): string {
         return `${prefix}-${crypto.randomUUID()}`;
     }
 
-    return `${prefix}-${Date.now()}-${Math.random()
-        .toString(36)
-        .slice(2, 10)}`;
+    return (
+        `${prefix}-${Date.now()}-` +
+        Math.random()
+            .toString(36)
+            .slice(2, 10)
+    );
 }
 
 
-function countCharacters(text: string): number {
-    /*
-        Array.from() を使用することで、
-        JavaScriptのUTF-16コード単位ではなく
-        Unicodeコードポイント単位で数える。
-
-        例:
-        😀 = 1文字
-    */
-
+/**
+ * Unicodeコードポイント単位で文字数を数える。
+ *
+ * UTF-16コード単位ではなくArray.from()を使用する。
+ *
+ * 例:
+ * 😀 = 1文字
+ */
+function countCharacters(
+    text: string
+): number {
     return Array.from(text).length;
 }
 
 
+/**
+ * 初期章を生成。
+ */
 function createInitialChapter(): Chapter {
     return {
         id: 'ch-1',
         title: '第一章',
         content: '',
-        characterCount: 0
+        characterCount: 0,
     };
 }
 
 
+/**
+ * 初期状態を生成。
+ */
 function createInitialState(): NovelState {
-    const chapter = createInitialChapter();
+    const chapter =
+        createInitialChapter();
 
     return {
         title: '無題の作品',
 
-        chapters: [chapter],
+        chapters: [
+            chapter,
+        ],
 
-        currentChapterId: chapter.id,
+        currentChapterId:
+            chapter.id,
 
-        currentMode: 'editor',
+        currentMode:
+            'editor',
 
-        currentPageIndex: 0,
+        currentPageIndex:
+            0,
 
-        totalCharacterCount: 0,
+        totalCharacterCount:
+            0,
 
-        saveStatus: 'idle',
+        saveStatus:
+            'idle',
 
-        lastSavedAt: null,
+        lastSavedAt:
+            null,
 
-        initialized: false
+        initialized:
+            false,
     };
 }
 
@@ -118,8 +150,9 @@ function createInitialState(): NovelState {
 ========================================================= */
 
 export class AppState {
-
-    private state: NovelState = createInitialState();
+    private state:
+        NovelState =
+        createInitialState();
 
     private readonly listeners =
         new Set<StateListener>();
@@ -127,23 +160,30 @@ export class AppState {
 
     /* =====================================================
        Read
-    ===================================================== */
+    ====================================================== */
 
-    public getState(): Readonly<NovelState> {
+    /**
+     * 現在の状態を取得。
+     */
+    public getState():
+        Readonly<NovelState> {
         return this.state;
     }
 
 
-    public getCurrentChapter(): Readonly<Chapter> {
-        const chapter = this.state.chapters.find(
-            item =>
-                item.id === this.state.currentChapterId
-        );
-
-        /*
-            状態の整合性が壊れている場合、
-            静かにundefinedを返すより即座に異常を知らせる。
-        */
+    /**
+     * 現在の章を取得。
+     *
+     * 現在の章が存在しない場合は状態破損として扱う。
+     */
+    public getCurrentChapter():
+        Readonly<Chapter> {
+        const chapter =
+            this.state.chapters.find(
+                (item) =>
+                    item.id ===
+                    this.state.currentChapterId
+            );
 
         if (!chapter) {
             throw new Error(
@@ -155,14 +195,18 @@ export class AppState {
     }
 
 
+    /**
+     * IDから章を取得。
+     */
     public getChapter(
         chapterId: string
-    ): Readonly<Chapter> | null {
-
+    ):
+        Readonly<Chapter> | null {
         return (
             this.state.chapters.find(
-                chapter =>
-                    chapter.id === chapterId
+                (chapter) =>
+                    chapter.id ===
+                    chapterId
             ) ?? null
         );
     }
@@ -170,48 +214,54 @@ export class AppState {
 
     /* =====================================================
        Subscription
-    ===================================================== */
+    ====================================================== */
 
+    /**
+     * 状態変更を購読。
+     *
+     * unsubscribe関数を返す。
+     */
     public subscribe(
         listener: StateListener
     ): () => void {
-
-        this.listeners.add(listener);
-
-        /*
-            unsubscribe関数を返す。
-        */
+        this.listeners.add(
+            listener
+        );
 
         return () => {
-            this.listeners.delete(listener);
+            this.listeners.delete(
+                listener
+            );
         };
     }
 
 
+    /**
+     * 購読者へ状態変更を通知。
+     */
     private notify(): void {
-
         /*
-            Setをコピーしてから通知。
+         * 通知中にsubscribe/unsubscribeされても
+         * 現在の通知処理へ影響しないようコピーする。
+         */
+        const listeners =
+            Array.from(
+                this.listeners
+            );
 
-            listener内でsubscribe/unsubscribeされても
-            現在の通知処理が壊れない。
-        */
+        const snapshot =
+            this.state;
 
-        const listeners = Array.from(
-            this.listeners
-        );
-
-        const snapshot = this.state;
-
-        for (const listener of listeners) {
+        for (
+            const listener of listeners
+        ) {
             try {
                 listener(snapshot);
             } catch (error) {
                 /*
-                    一つのUIコンポーネントのエラーで
-                    他の購読者まで巻き込まない。
-                */
-
+                 * 一つのUIコンポーネントの
+                 * エラーで他の購読者を巻き込まない。
+                 */
                 console.error(
                     'AppState listener error:',
                     error
@@ -223,62 +273,79 @@ export class AppState {
 
     /* =====================================================
        Initialization
-    ===================================================== */
+    ====================================================== */
 
     public markInitialized(): void {
-
-        if (this.state.initialized) {
+        if (
+            this.state.initialized
+        ) {
             return;
         }
 
         this.update({
-            initialized: true
+            initialized: true,
         });
     }
 
 
     /* =====================================================
        Novel
-    ===================================================== */
+    ====================================================== */
 
-    public setTitle(title: string): void {
-
+    /**
+     * 作品タイトルを変更。
+     */
+    public setTitle(
+        title: string
+    ): void {
         const normalizedTitle =
             title.trim().length > 0
                 ? title
                 : '無題の作品';
 
         if (
-            this.state.title === normalizedTitle
+            this.state.title ===
+            normalizedTitle
         ) {
             return;
         }
 
         this.update({
-            title: normalizedTitle,
-            saveStatus: 'dirty'
+            title:
+                normalizedTitle,
+
+            saveStatus:
+                'dirty',
         });
     }
 
 
     /* =====================================================
        Chapter
-    ===================================================== */
+    ====================================================== */
 
+    /**
+     * 新しい章を追加。
+     *
+     * 追加した章を現在章にする。
+     */
     public addChapter(
         title?: string
     ): string {
-
         const chapterNumber =
-            this.state.chapters.length + 1;
+            this.state.chapters.length +
+            1;
 
         const chapter: Chapter = {
             id: createId('ch'),
+
             title:
                 title?.trim() ||
                 `${this.toJapaneseNumber(chapterNumber)}章`,
+
             content: '',
-            characterCount: 0
+
+            characterCount: 0,
         };
 
         this.state = {
@@ -286,14 +353,17 @@ export class AppState {
 
             chapters: [
                 ...this.state.chapters,
-                chapter
+                chapter,
             ],
 
-            currentChapterId: chapter.id,
+            currentChapterId:
+                chapter.id,
 
-            currentPageIndex: 0,
+            currentPageIndex:
+                0,
 
-            saveStatus: 'dirty'
+            saveStatus:
+                'dirty',
         };
 
         this.notify();
@@ -302,14 +372,19 @@ export class AppState {
     }
 
 
+    /**
+     * 章を選択。
+     *
+     * 章変更時は必ず先頭ページへ戻す。
+     */
     public selectChapter(
         chapterId: string
     ): void {
-
         const exists =
             this.state.chapters.some(
-                chapter =>
-                    chapter.id === chapterId
+                (chapter) =>
+                    chapter.id ===
+                    chapterId
             );
 
         if (!exists) {
@@ -328,29 +403,27 @@ export class AppState {
         }
 
         this.update({
-            currentChapterId: chapterId,
+            currentChapterId:
+                chapterId,
 
-            /*
-                章が変わったら必ず先頭ページへ戻す。
-                ここを忘れると、
-                「第3章に切り替えたら存在しないページ」
-                のような事故が起こる。
-            */
-
-            currentPageIndex: 0
+            currentPageIndex:
+                0,
         });
     }
 
 
+    /**
+     * 章タイトルを変更。
+     */
     public renameChapter(
         chapterId: string,
         title: string
     ): void {
-
         const index =
             this.state.chapters.findIndex(
-                chapter =>
-                    chapter.id === chapterId
+                (chapter) =>
+                    chapter.id ===
+                    chapterId
             );
 
         if (index === -1) {
@@ -365,37 +438,47 @@ export class AppState {
 
         const chapters =
             this.state.chapters.map(
-                (chapter, chapterIndex) => {
-
+                (
+                    chapter,
+                    chapterIndex
+                ) => {
                     if (
-                        chapterIndex !== index
+                        chapterIndex !==
+                        index
                     ) {
                         return chapter;
                     }
 
                     return {
                         ...chapter,
-                        title: normalizedTitle
+                        title:
+                            normalizedTitle,
                     };
                 }
             );
 
         this.update({
             chapters,
-            saveStatus: 'dirty'
+            saveStatus:
+                'dirty',
         });
     }
 
 
+    /**
+     * 章本文を更新。
+     *
+     * 本文と文字数を必ず同時に更新する。
+     */
     public updateChapterContent(
         chapterId: string,
         content: string
     ): void {
-
         const index =
             this.state.chapters.findIndex(
-                chapter =>
-                    chapter.id === chapterId
+                (chapter) =>
+                    chapter.id ===
+                    chapterId
             );
 
         if (index === -1) {
@@ -409,30 +492,27 @@ export class AppState {
         const current =
             this.state.chapters[index];
 
-        /*
-            本文と文字数を同じ処理で更新する。
-
-            characterCountを別の場所から
-            手動更新させないことが重要。
-        */
-
         const characterCount =
-            countCharacters(content);
+            countCharacters(
+                content
+            );
 
         if (
-            current.content === content &&
+            current.content ===
+                content &&
             current.characterCount ===
                 characterCount
         ) {
             return;
         }
 
-        const updatedChapter: Chapter = {
+        const updatedChapter:
+            Chapter = {
             ...current,
 
             content,
 
-            characterCount
+            characterCount,
         };
 
         const chapters =
@@ -443,11 +523,27 @@ export class AppState {
 
         const totalCharacterCount =
             chapters.reduce(
-                (total, chapter) =>
+                (
+                    total,
+                    chapter
+                ) =>
                     total +
                     chapter.characterCount,
                 0
             );
+
+        /*
+         * 本文変更時は現在ページを
+         * 先頭へ戻す。
+         *
+         * 以前のページ位置が新しい本文では
+         * 存在しない可能性があるため。
+         */
+        const currentPageIndex =
+            chapterId ===
+            this.state.currentChapterId
+                ? 0
+                : this.state.currentPageIndex;
 
         this.state = {
             ...this.state,
@@ -456,34 +552,36 @@ export class AppState {
 
             totalCharacterCount,
 
-            saveStatus: 'dirty'
+            currentPageIndex,
+
+            saveStatus:
+                'dirty',
         };
 
         this.notify();
     }
 
 
+    /**
+     * 章を削除。
+     *
+     * 最低1章は必ず残す。
+     */
     public deleteChapter(
         chapterId: string
     ): void {
-
-        /*
-            最低1章は必ず残す。
-
-            小説エディタで章0個は、
-            UI上も保存上も無意味なので禁止。
-        */
-
         if (
-            this.state.chapters.length <= 1
+            this.state.chapters.length <=
+            1
         ) {
             return;
         }
 
         const index =
             this.state.chapters.findIndex(
-                chapter =>
-                    chapter.id === chapterId
+                (chapter) =>
+                    chapter.id ===
+                    chapterId
             );
 
         if (index === -1) {
@@ -492,36 +590,48 @@ export class AppState {
 
         const chapters =
             this.state.chapters.filter(
-                chapter =>
-                    chapter.id !== chapterId
+                (chapter) =>
+                    chapter.id !==
+                    chapterId
             );
 
         let currentChapterId =
             this.state.currentChapterId;
 
         /*
-            現在表示中の章を削除した場合は、
-            直前の章、なければ先頭へ移動。
-        */
-
+         * 現在章を削除した場合は
+         * 直前の章へ移動。
+         *
+         * 直前が存在しなければ先頭。
+         */
         if (
-            currentChapterId === chapterId
+            currentChapterId ===
+            chapterId
         ) {
             const fallbackIndex =
-                Math.max(0, index - 1);
+                Math.max(
+                    0,
+                    index - 1
+                );
+
+            const nextIndex =
+                Math.min(
+                    fallbackIndex,
+                    chapters.length - 1
+                );
 
             currentChapterId =
                 chapters[
-                    Math.min(
-                        fallbackIndex,
-                        chapters.length - 1
-                    )
+                    nextIndex
                 ].id;
         }
 
         const totalCharacterCount =
             chapters.reduce(
-                (total, chapter) =>
+                (
+                    total,
+                    chapter
+                ) =>
                     total +
                     chapter.characterCount,
                 0
@@ -534,11 +644,13 @@ export class AppState {
 
             currentChapterId,
 
-            currentPageIndex: 0,
+            currentPageIndex:
+                0,
 
             totalCharacterCount,
 
-            saveStatus: 'dirty'
+            saveStatus:
+                'dirty',
         };
 
         this.notify();
@@ -547,14 +659,19 @@ export class AppState {
 
     /* =====================================================
        Mode
-    ===================================================== */
+    ====================================================== */
 
+    /**
+     * 表示モードを変更。
+     *
+     * モード変更ではページ位置をリセットしない。
+     */
     public setMode(
         mode: AppMode
     ): void {
-
         if (
-            this.state.currentMode === mode
+            this.state.currentMode ===
+            mode
         ) {
             return;
         }
@@ -562,39 +679,41 @@ export class AppState {
         this.state = {
             ...this.state,
 
-            currentMode: mode,
-
-            /*
-                モード変更時にページ位置を
-                勝手にリセットしない。
-
-                Preview → Readingなどで
-                読んでいた位置を維持できる。
-            */
+            currentMode:
+                mode,
         };
 
         this.notify();
     }
 
 
+    /**
+     * モード変更用エイリアス。
+     */
     public toggleMode(
         mode: AppMode
     ): void {
-
         this.setMode(mode);
     }
 
 
     /* =====================================================
        Pagination
-    ===================================================== */
+    ====================================================== */
 
+    /**
+     * 現在ページを変更。
+     *
+     * ページ総数はPaginationEngine側で
+     * 管理するため、ここでは下限0だけ保証する。
+     */
     public setPageIndex(
         pageIndex: number
     ): void {
-
         if (
-            !Number.isFinite(pageIndex)
+            !Number.isFinite(
+                pageIndex
+            )
         ) {
             return;
         }
@@ -602,7 +721,9 @@ export class AppState {
         const normalized =
             Math.max(
                 0,
-                Math.floor(pageIndex)
+                Math.floor(
+                    pageIndex
+                )
             );
 
         if (
@@ -613,33 +734,53 @@ export class AppState {
         }
 
         this.update({
-            currentPageIndex: normalized
+            currentPageIndex:
+                normalized,
         });
     }
 
 
+    /**
+     * 次ページへ。
+     *
+     * 総ページ数が必要な境界判定は
+     * ReaderController / UI側で行う。
+     */
     public nextPage(): void {
-
         this.setPageIndex(
-            this.state.currentPageIndex + 1
+            this.state.currentPageIndex +
+            1
         );
     }
 
 
+    /**
+     * 前ページへ。
+     */
     public previousPage(): void {
-
         this.setPageIndex(
-            this.state.currentPageIndex - 1
+            Math.max(
+                0,
+                this.state.currentPageIndex -
+                1
+            )
         );
+    }
+
+
+    /**
+     * ページを先頭へ戻す。
+     */
+    public resetPage(): void {
+        this.setPageIndex(0);
     }
 
 
     /* =====================================================
        Save State
-    ===================================================== */
+    ====================================================== */
 
     public markDirty(): void {
-
         if (
             this.state.saveStatus ===
             'dirty'
@@ -648,15 +789,16 @@ export class AppState {
         }
 
         this.update({
-            saveStatus: 'dirty'
+            saveStatus:
+                'dirty',
         });
     }
 
 
     public markSaving(): void {
-
         this.update({
-            saveStatus: 'saving'
+            saveStatus:
+                'saving',
         });
     }
 
@@ -664,29 +806,29 @@ export class AppState {
     public markSaved(
         timestamp = Date.now()
     ): void {
-
         this.update({
-            saveStatus: 'saved',
+            saveStatus:
+                'saved',
 
-            lastSavedAt: timestamp
+            lastSavedAt:
+                timestamp,
         });
     }
 
 
     public markSaveError(): void {
-
         this.update({
-            saveStatus: 'error'
+            saveStatus:
+                'error',
         });
     }
 
 
     /* =====================================================
        Reset
-    ===================================================== */
+    ====================================================== */
 
     public reset(): void {
-
         this.state =
             createInitialState();
 
@@ -694,37 +836,48 @@ export class AppState {
     }
 
 
+    /* =====================================================
+       Replace State
+    ====================================================== */
+
+    /**
+     * 外部から状態を置き換える。
+     *
+     * IndexedDB等からロードしたデータを
+     * そのまま内部状態へ共有しない。
+     */
     public replaceState(
         state: NovelState
     ): void {
-
-        this.validateState(state);
-
-        /*
-            外部から渡された配列・章オブジェクトを
-            そのまま保持しない。
-
-            IndexedDBから読み込んだデータなどを
-            State内部と共有すると、意図しない変更が
-            起きる可能性があるため。
-        */
+        this.validateState(
+            state
+        );
 
         const chapters =
             state.chapters.map(
-                chapter => ({
-                    id: chapter.id,
-                    title: chapter.title,
-                    content: chapter.content,
+                (chapter) => ({
+                    id:
+                        chapter.id,
+
+                    title:
+                        chapter.title,
+
+                    content:
+                        chapter.content,
+
                     characterCount:
                         countCharacters(
                             chapter.content
-                        )
+                        ),
                 })
             );
 
         const totalCharacterCount =
             chapters.reduce(
-                (total, chapter) =>
+                (
+                    total,
+                    chapter
+                ) =>
                     total +
                     chapter.characterCount,
                 0
@@ -735,7 +888,23 @@ export class AppState {
 
             chapters,
 
-            totalCharacterCount
+            totalCharacterCount,
+
+            /*
+             * ページ番号は保存データ側の値を
+             * そのまま使用する。
+             *
+             * 実際に存在するページかどうかは
+             * ReaderControllerがPaginationEngineの
+             * 結果を使って補正する。
+             */
+            currentPageIndex:
+                Math.max(
+                    0,
+                    Math.floor(
+                        state.currentPageIndex
+                    )
+                ),
         };
 
         this.notify();
@@ -744,15 +913,15 @@ export class AppState {
 
     /* =====================================================
        Internal Update
-    ===================================================== */
+    ====================================================== */
 
     private update(
-        changes: Partial<NovelState>
+        changes:
+            Partial<NovelState>
     ): void {
-
         this.state = {
             ...this.state,
-            ...changes
+            ...changes,
         };
 
         this.notify();
@@ -761,15 +930,15 @@ export class AppState {
 
     /* =====================================================
        Validation
-    ===================================================== */
+    ====================================================== */
 
     private validateState(
         state: NovelState
     ): void {
-
         if (
             !state ||
-            typeof state !== 'object'
+            typeof state !==
+                'object'
         ) {
             throw new Error(
                 '無効なNovelStateです。'
@@ -777,8 +946,11 @@ export class AppState {
         }
 
         if (
-            !Array.isArray(state.chapters) ||
-            state.chapters.length === 0
+            !Array.isArray(
+                state.chapters
+            ) ||
+            state.chapters.length ===
+                0
         ) {
             throw new Error(
                 '作品には最低1章必要です。'
@@ -787,12 +959,14 @@ export class AppState {
 
         const currentChapterExists =
             state.chapters.some(
-                chapter =>
+                (chapter) =>
                     chapter.id ===
                     state.currentChapterId
             );
 
-        if (!currentChapterExists) {
+        if (
+            !currentChapterExists
+        ) {
             throw new Error(
                 'currentChapterIdに対応する章が存在しません。'
             );
@@ -802,10 +976,31 @@ export class AppState {
             !Number.isInteger(
                 state.currentPageIndex
             ) ||
-            state.currentPageIndex < 0
+            state.currentPageIndex <
+                0
         ) {
             throw new Error(
                 'currentPageIndexが不正です。'
+            );
+        }
+
+        if (
+            !['editor', 'preview', 'reading']
+                .includes(
+                    state.currentMode
+                )
+        ) {
+            throw new Error(
+                'currentModeが不正です。'
+            );
+        }
+
+        if (
+            typeof state.title !==
+            'string'
+        ) {
+            throw new Error(
+                'titleが不正です。'
             );
         }
     }
@@ -813,12 +1008,11 @@ export class AppState {
 
     /* =====================================================
        Japanese Chapter Number
-    ===================================================== */
+    ====================================================== */
 
     private toJapaneseNumber(
         number: number
     ): string {
-
         const numerals = [
             '〇',
             '一',
@@ -829,14 +1023,16 @@ export class AppState {
             '六',
             '七',
             '八',
-            '九'
+            '九',
         ];
 
         if (
             number >= 1 &&
             number <= 9
         ) {
-            return numerals[number];
+            return numerals[
+                number
+            ];
         }
 
         if (
@@ -848,25 +1044,32 @@ export class AppState {
         if (
             number < 20
         ) {
-            return `十${numerals[number - 10]}`;
+            return (
+                `十${numerals[number - 10]}`
+            );
         }
 
         if (
             number < 100
         ) {
             const tens =
-                Math.floor(number / 10);
+                Math.floor(
+                    number / 10
+                );
 
             const ones =
                 number % 10;
 
             return (
-                `${tens === 1
-                    ? ''
-                    : numerals[tens]}十` +
-                (ones > 0
-                    ? numerals[ones]
-                    : '')
+                `${
+                    tens === 1
+                        ? ''
+                        : numerals[tens]
+                }十${
+                    ones > 0
+                        ? numerals[ones]
+                        : ''
+                }`
             );
         }
 
@@ -877,9 +1080,11 @@ export class AppState {
     private getDefaultChapterTitle(
         chapterNumber: number
     ): string {
-
-        return `${this.toJapaneseNumber(
-            chapterNumber
-        )}章`;
+        return (
+            `${this.toJapaneseNumber(
+                chapterNumber
+            )}章`
+        );
     }
 }
+```
