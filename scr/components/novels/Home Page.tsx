@@ -81,7 +81,7 @@ export default function HomePage() {
                   title="読む"
                 >
                   <BookOpen size={16} />
-                </Link>
+                </button>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
